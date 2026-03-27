@@ -201,6 +201,47 @@ pub struct Build {
     pub(crate) exports: HashMap<String, Utf8UnixPathBuf>,
 }
 
+/// Block device configuration for a sandbox's rootfs.
+///
+/// When present, the sandbox will use a block device image (virtio-blk) instead of overlayfs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Getters)]
+#[getset(get = "pub with_prefix")]
+pub struct BlockDeviceConfig {
+    /// The size of the block image in GiB.
+    #[serde(default = "default_block_device_size")]
+    size: u64,
+
+    /// The filesystem type (e.g., "ext4").
+    #[serde(default = "default_block_device_filesystem")]
+    filesystem: String,
+
+    /// Whether the writable layer should use a sparse file.
+    #[serde(default = "default_block_device_sparse")]
+    sparse: bool,
+}
+
+fn default_block_device_size() -> u64 {
+    256
+}
+
+fn default_block_device_filesystem() -> String {
+    "ext4".to_string()
+}
+
+fn default_block_device_sparse() -> bool {
+    true
+}
+
+impl Default for BlockDeviceConfig {
+    fn default() -> Self {
+        Self {
+            size: default_block_device_size(),
+            filesystem: default_block_device_filesystem(),
+            sparse: default_block_device_sparse(),
+        }
+    }
+}
+
 /// Network scope configuration for a sandbox.
 #[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[repr(u8)]
@@ -304,6 +345,11 @@ pub struct Sandbox {
     /// The network scope for the sandbox.
     #[serde(default)]
     pub(crate) scope: NetworkScope,
+
+    /// Block device configuration for rootfs.
+    /// When present, uses a block device image (virtio-blk) instead of overlayfs.
+    #[serde(skip_serializing_if = "Option::is_none", default)] // default of Option<T> is None
+    pub(crate) block_device: Option<BlockDeviceConfig>,
 }
 
 //--------------------------------------------------------------------------------------------------

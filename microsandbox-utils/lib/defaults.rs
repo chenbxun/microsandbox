@@ -74,3 +74,16 @@ pub const DEFAULT_SERVER_PORT: u16 = 5555;
 
 /// The default microsandbox-portal port.
 pub const DEFAULT_PORTAL_GUEST_PORT: u16 = 4444;
+
+/// The filename for the libkrun init binary used as the init process inside microVMs.
+pub const INIT_KRUN_FILENAME: &str = "init.krun";
+
+/// The default path to the libkrun init binary.
+/// Located alongside the libkrun shared library in ~/.local/lib/.
+pub static DEFAULT_INIT_KRUN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
+    dirs::home_dir()
+        .unwrap()
+        .join(".local")
+        .join("lib")
+        .join(INIT_KRUN_FILENAME)
+});

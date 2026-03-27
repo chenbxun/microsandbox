@@ -13,7 +13,7 @@ use microsandbox_utils::{
 use sqlx::{Pool, Sqlite};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::{MicrosandboxResult, management::db, vm::Rootfs};
+use crate::{MicrosandboxResult, management::db, vm::{Rootfs, BlockImage, OverlayBDImage}};
 
 //--------------------------------------------------------------------------------------------------
 // Constants
@@ -147,6 +147,8 @@ impl ProcessMonitor for MicroVmMonitor {
                     .collect::<Vec<String>>()
                     .join(":")
             ),
+            Rootfs::Block(path) => format!("block:{}", path.to_string_lossy().into_owned()),
+            Rootfs::OverlayBD(path) => format!("overlaybd:{}", path.to_string_lossy().into_owned()),
         };
 
         // Insert sandbox entry into database
@@ -317,6 +319,21 @@ impl ProcessMonitor for MicroVmMonitor {
     async fn stop(&mut self) -> MicrosandboxUtilsResult<()> {
         // Restore terminal settings if they were modified
         self.restore_terminal_settings();
+
+        // Detach loop device if block rootfs was used
+        match &self.rootfs {
+            Rootfs::Block(path) => {
+                let mut block_image = BlockImage::from_existing(None, Some(path.to_path_buf())).await.map_err(MicrosandboxUtilsError::custom)?;
+                block_image.detach_loop().await.map_err(MicrosandboxUtilsError::custom)?;
+            }
+            Rootfs::OverlayBD(path) => {
+                let device_id = format!("{}_{}", &self.config_file, &self.sandbox_name);
+                let mut overlaybd_image = OverlayBDImage::from_existing(None, Some(path.to_path_buf()), device_id).await.map_err(MicrosandboxUtilsError::custom)?;
+                overlaybd_image.detach_loop().await.map_err(MicrosandboxUtilsError::custom)?;
+                // OverlayBDImage::stop_service().await.map_err(MicrosandboxUtilsError::custom)?;
+            }
+            _ => {}
+        }
 
         // Update sandbox status to stopped
         db::update_sandbox_status(

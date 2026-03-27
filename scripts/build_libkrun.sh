@@ -204,8 +204,10 @@ LIBKRUNFW_ABI_VERSION="${LIBKRUNFW_ABI_VERSION:-4}"
 LIBKRUN_VERSION="${LIBKRUN_VERSION:-1.14.0}"
 LIBKRUN_ABI_VERSION="${LIBKRUN_ABI_VERSION:-1}"
 BUILD_DIR="$ORIGINAL_DIR/build"
-LIBKRUNFW_REPO="https://github.com/microsandbox/libkrunfw.git"
-LIBKRUN_REPO="https://github.com/microsandbox/libkrun.git"
+# LIBKRUNFW_REPO="https://github.com/microsandbox/libkrunfw.git"
+# LIBKRUN_REPO="https://github.com/microsandbox/libkrun.git"
+LIBKRUNFW_REPO="git@github.com:zerocore-ai/libkrunfw.git"
+LIBKRUN_REPO="git@github.com:zerocore-ai/libkrun.git"
 LIBKRUNFW_BRANCH="releases/v${LIBKRUNFW_FULL_VERSION}"
 LIBKRUN_BRANCH="releases/v${LIBKRUN_VERSION}"
 NO_CLEANUP=false
@@ -447,10 +449,10 @@ build_libkrun() {
 
     case "$OS_TYPE" in
         Darwin)
-            sudo make LIBRARY_PATH="$LIBRARY_PATH" PATH="$PATH"
+            sudo make BLK=1 LIBRARY_PATH="$LIBRARY_PATH" PATH="$PATH"
             ;;
         *)
-            make LIBRARY_PATH="$LIBRARY_PATH" PATH="$PATH"
+            make BLK=1 LIBRARY_PATH="$LIBRARY_PATH" PATH="$PATH"
             ;;
     esac
     check_success "Failed to build libkrun"

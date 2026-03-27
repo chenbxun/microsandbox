@@ -850,6 +850,57 @@ pub(crate) async fn get_image_layer_digests(
         .collect())
 }
 
+/// Custom annotation key used to mark an image as OverlayBD format in the manifest.
+pub(crate) const OVERLAYBD_IMAGE_FORMAT_ANNOTATION: &str = "microsandbox.image.format";
+
+/// Custom annotation value for OverlayBD images.
+pub(crate) const OVERLAYBD_IMAGE_FORMAT_VALUE: &str = "overlaybd";
+
+/// Checks if an image is a known OverlayBD image by looking for the
+/// `microsandbox.image.format: overlaybd` annotation in its manifest.
+///
+/// This provides a fast-path to avoid re-fetching manifests from the registry
+/// for OverlayBD images that have already been processed.
+pub(crate) async fn is_overlaybd_image_in_db(
+    pool: &Pool<Sqlite>,
+    reference: &str,
+) -> MicrosandboxResult<bool> {
+    let result = sqlx::query(
+        r#"
+        SELECT m.annotations_json
+        FROM manifests m
+        JOIN images i ON m.image_id = i.id
+        WHERE i.reference = ?
+        ORDER BY m.id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(reference)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(row) = result else {
+        tracing::debug!(?reference, "image not found in db");
+        return Ok(false);
+    };
+
+    let Some(json_str) = row.get::<Option<String>, _>("annotations_json") else {
+        tracing::debug!(?reference, "manifest has no annotations (NULL)");
+        return Ok(false);
+    };
+
+    let Ok(annotations) =
+        serde_json::from_str::<std::collections::BTreeMap<String, String>>(&json_str)
+    else {
+        tracing::warn!(?reference, "failed to parse manifest annotations_json");
+        return Ok(false);
+    };
+
+    Ok(annotations
+        .get(OVERLAYBD_IMAGE_FORMAT_ANNOTATION)
+        .is_some_and(|v| v == OVERLAYBD_IMAGE_FORMAT_VALUE))
+}
+
 /// Associates a layer with a manifest in the database.
 ///
 /// If the layer doesn't exist, it will be created first, before being

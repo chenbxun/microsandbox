@@ -1,4 +1,4 @@
-use std::{str::FromStr, sync::Arc};
+use std::{collections::BTreeMap, str::FromStr, sync::Arc};
 
 use bytes::Bytes;
 use futures::{
@@ -23,7 +23,7 @@ use tokio::{
 use crate::{
     MicrosandboxError, MicrosandboxResult,
     management::db,
-    oci::{Reference, global_cache::GlobalCacheOps, image::Image, layer::LayerOps},
+    oci::{Reference, global_cache::GlobalCacheOps, image::Image, layer::LayerOps, overlaybd},
     utils,
 };
 
@@ -45,6 +45,40 @@ const FETCH_IMAGE_DETAILS_MSG: &str = "Fetch image details";
 const DOWNLOAD_LAYER_MSG: &str = "Download layers";
 
 pub(crate) const DOCKER_REFERENCE_TYPE_ANNOTATION: &str = "vnd.docker.reference.type";
+
+/// OverlayBD annotation key for blob digest in the OCI manifest layer descriptor.
+/// When present, indicates the layer is in OverlayBD format.
+pub(crate) const OVERLAYBD_BLOB_DIGEST_ANNOTATION: &str =
+    "containerd.io/snapshot/overlaybd/blob-digest";
+
+/// OverlayBD annotation key for blob size in the OCI manifest layer descriptor.
+/// When present, indicates the layer is in OverlayBD format.
+pub(crate) const OVERLAYBD_BLOB_SIZE_ANNOTATION: &str =
+    "containerd.io/snapshot/overlaybd/blob-size";
+
+/// OverlayBD annotation key for filesystem type in the OCI manifest layer descriptor.
+pub(crate) const OVERLAYBD_BLOB_FS_TYPE_ANNOTATION: &str =
+    "containerd.io/snapshot/overlaybd/blob-fs-type";
+
+/// TurboOCI annotation key for target digest in the OCI manifest layer descriptor.
+/// When present alongside blob-digest/blob-size, indicates the layer uses TurboOCI format
+/// for on-demand loading with filesystem metadata.
+/// Ref: accelerated-container-image/pkg/label/label.go
+pub(crate) const TURBO_OCI_DIGEST_ANNOTATION: &str =
+    "containerd.io/snapshot/overlaybd/turbo-oci/target-digest";
+
+/// TurboOCI annotation key for target media type in the OCI manifest layer descriptor.
+/// Used to determine compression format (e.g. gzip) for TurboOCI layers.
+pub(crate) const TURBO_OCI_MEDIA_TYPE_ANNOTATION: &str =
+    "containerd.io/snapshot/overlaybd/turbo-oci/target-media-type";
+
+/// Legacy FastOCI annotation key for target digest (backward compatibility with older images).
+pub(crate) const FAST_OCI_DIGEST_ANNOTATION: &str =
+    "containerd.io/snapshot/overlaybd/fastoci/target-digest";
+
+/// Legacy FastOCI annotation key for target media type (backward compatibility with older images).
+pub(crate) const FAST_OCI_MEDIA_TYPE_ANNOTATION: &str =
+    "containerd.io/snapshot/overlaybd/fastoci/target-media-type";
 
 /// Registry is an abstraction over the logic for fetching images from a registry,
 /// and storing them in a local cache.
@@ -248,15 +282,28 @@ where
             .map(|m| m.digest.clone())
     }
 
-    /// Pulls an OCI image from the specified repository, and This includes downloading
+    /// Pulls an OCI image from the specified repository. This includes downloading
     /// the image manifest, fetching the image configuration, and downloading the image layers.
     ///
+    /// For OverlayBD images, the layer download and extraction steps are skipped since
+    /// OverlayBD provides on-demand block-level access without requiring full download.
+    ///
     /// The image can be selected either by tag or digest using the [`ReferenceSelector`] enum.
-    pub(crate) async fn pull_image(&self, reference: &Reference) -> MicrosandboxResult<()> {
+    ///
+    /// ## Returns
+    ///
+    /// Returns `true` if the image is in OverlayBD format, `false` otherwise.
+    pub(crate) async fn pull_image(&self, reference: &Reference) -> MicrosandboxResult<bool> {
+        // if this image is already known to be OverlayBD in the database, skip everything.
+        if db::is_overlaybd_image_in_db(&self.db, &reference.as_db_key()).await? {
+            tracing::info!(?reference, "known OverlayBD image found in cache, skipping pull");
+            return Ok(true);
+        }
+
         // Check if all layers are extracted before proceeding to fetch and extract
         if self.global_cache().all_layers_extracted(reference).await? {
             tracing::info!(?reference, "Image was already extracted");
-            return Ok(());
+            return Ok(false);
         }
 
         // Calculate total size and save image record
@@ -273,10 +320,79 @@ where
 
         // Fetch and save manifest
         let (manifest, config) = self.fetch_manifest_and_config(reference).await?;
+
+        // Check if this is an OverlayBD image
+        let is_overlaybd = overlaybd::is_overlaybd_image(&manifest);
+        if is_overlaybd {
+            tracing::info!(?reference, "detected OverlayBD image, skipping layer download and extraction");
+            tracing::debug!(?manifest, ?config, "OverlayBD image manifest and config");
+
+            // Inject a custom annotation to mark this manifest as OverlayBD.
+            let mut manifest = manifest;
+            let annotations = manifest.annotations.get_or_insert_with(BTreeMap::new);
+            annotations.insert(
+                db::OVERLAYBD_IMAGE_FORMAT_ANNOTATION.to_string(),
+                db::OVERLAYBD_IMAGE_FORMAT_VALUE.to_string(),
+            );
+            let manifest_id = db::save_manifest(&self.db, image_id, &manifest).await?;
+            db::save_config(&self.db, manifest_id, &config).await?;
+
+            let diffs = config.rootfs.diff_ids.iter();
+            let layer_to_zip = manifest.layers.iter().zip(diffs);
+            let db_ops = layer_to_zip
+                .map(|(layer, diff_id)| {
+                    db::create_or_update_manifest_layer(&self.db, layer, diff_id, manifest_id)
+                })
+                .collect::<Vec<_>>();
+            try_join_all(db_ops).await?;
+
+            #[cfg(feature = "cli")]
+            fetch_details_sp.finish();
+
+            // For TurboOCI layers, download and extract the metadata archive (turboOCIv1.tar.gz)
+            // so that fs.meta and gzip.meta files are present before config generation.
+            // In the Go snapshotter (overlay.go:528-530), TurboOCI layers are set to
+            // storageTypeNormal so containerd unpacks them automatically. Since microsandbox
+            // bypasses containerd's unpack pipeline, we must download the metadata ourselves.
+            let microsandbox_home = microsandbox_utils::env::get_microsandbox_home_path();
+            for (i, layer) in manifest.layers.iter().enumerate() {
+                if let Some(annotations) = &layer.annotations {
+                    let (is_turbo_oci, _, _) = overlaybd::check_turbo_oci(annotations);
+                    if is_turbo_oci {
+                        let layer_dir = overlaybd::layer_cache_dir(&microsandbox_home, reference, i);
+
+                        // Skip if metadata already extracted from a previous pull.
+                        if overlaybd::has_fs_meta(&layer_dir) {
+                            tracing::debug!(layer_idx = i, "TurboOCI metadata already present, skipping download");
+                            continue;
+                        }
+
+                        // The layer descriptor's digest points to the turboOCIv1.tar.gz
+                        // metadata blob (NOT the actual data blob — that's in target-digest).
+                        let digest = Digest::from_str(&layer.digest)?;
+                        tracing::info!(layer_idx = i, %digest, "downloading TurboOCI metadata archive");
+
+                        let mut stream = self.fetch_digest_blob(reference, &digest, 0, None).await?;
+                        let mut blob_data = Vec::with_capacity(layer.size as usize);
+                        while let Some(chunk) = stream.next().await {
+                            blob_data.extend_from_slice(&chunk?);
+                        }
+
+                        overlaybd::extract_turbo_oci_metadata(blob_data, layer_dir).await?;
+                        tracing::info!(layer_idx = i, %digest, "extracted TurboOCI metadata");
+                    }
+                }
+            }
+
+            // Generate the overlaybd-tcmu config.v1.json for this image.
+            overlaybd::write_overlaybd_config(&microsandbox_home, reference, &manifest).await?;
+
+            return Ok(true);
+        }
+
+        // Standard OCI image: save manifest and config, then download and extract all layers
         let manifest_id = db::save_manifest(&self.db, image_id, &manifest).await?;
         db::save_config(&self.db, manifest_id, &config).await?;
-
-        // First, write the layer info to disk. This guarantees that we
         let diffs = config.rootfs.diff_ids.iter();
         let layer_to_zip = manifest.layers.iter().zip(diffs);
         let db_ops = layer_to_zip
@@ -321,7 +437,8 @@ where
         #[cfg(feature = "cli")]
         download_layers_sp.finish();
 
-        Image::new(layers).extract_all().await
+        Image::new(layers).extract_all().await?;
+        Ok(false)
     }
 
     /// Fetches all available multi-platform manifests for the given reference.

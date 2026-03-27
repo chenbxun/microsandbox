@@ -11,7 +11,7 @@ use crate::{MicrosandboxError, MicrosandboxResult};
 use microsandbox_utils::term;
 use microsandbox_utils::{
     DEFAULT_CONFIG, LOG_SUBDIR, MICROSANDBOX_CONFIG_FILENAME, MICROSANDBOX_ENV_DIR, PATCH_SUBDIR,
-    RW_SUBDIR, SANDBOX_DB_FILENAME,
+    RW_SUBDIR, BLOCK_SUBDIR, SANDBOX_DB_FILENAME,
 };
 use std::path::{Path, PathBuf};
 use tokio::{fs, io::AsyncWriteExt};
@@ -216,6 +216,7 @@ pub async fn clean(
     // Clean up sandbox-specific directories
     let rw_path = menv_path.join(RW_SUBDIR).join(&scoped_name);
     let patch_path = menv_path.join(PATCH_SUBDIR).join(&scoped_name);
+    let block_path = menv_path.join(BLOCK_SUBDIR).join(&scoped_name);
 
     // Remove sandbox directories if they exist
     if rw_path.exists() {
@@ -228,6 +229,14 @@ pub async fn clean(
         tracing::info!(
             "Removed sandbox patch directory at {}",
             patch_path.display()
+        );
+    }
+
+    if block_path.exists() {
+        fs::remove_dir_all(&block_path).await?;
+        tracing::info!(
+            "Removed sandbox block directory at {}",
+            block_path.display()
         );
     }
 

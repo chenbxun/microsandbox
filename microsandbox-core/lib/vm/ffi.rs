@@ -109,6 +109,8 @@ unsafe extern "C" {
         read_only: bool,
     ) -> i32;
 
+    pub(crate) fn krun_set_root_disk(ctx_id: u32, c_disk_path: *const c_char) -> i32;
+
     /// Adds an independent virtio-fs device pointing to a host's directory with a tag.
     ///
     /// ## Arguments

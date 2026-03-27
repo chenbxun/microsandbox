@@ -81,6 +81,8 @@ async fn main() -> Result<()> {
             log_level,
             native_rootfs,
             overlayfs_layer,
+            block_rootfs,
+            overlaybd_rootfs,
             num_vcpus,
             memory_mib,
             workdir_path,
@@ -98,6 +100,8 @@ async fn main() -> Result<()> {
             tracing::debug!("log_level: {:#?}", log_level);
             tracing::debug!("native_rootfs: {:#?}", native_rootfs);
             tracing::debug!("overlayfs_layer: {:#?}", overlayfs_layer);
+            tracing::debug!("block_rootfs: {:#?}", block_rootfs);
+            tracing::debug!("overlaybd_rootfs: {:#?}", overlaybd_rootfs);
             tracing::debug!("num_vcpus: {:#?}", num_vcpus);
             tracing::debug!("memory_mib: {:#?}", memory_mib);
             tracing::debug!("workdir_path: {:#?}", workdir_path);
@@ -110,15 +114,16 @@ async fn main() -> Result<()> {
             tracing::debug!("subnet: {:#?}", subnet);
             tracing::debug!("args: {:#?}", args);
 
-            // Check that only one of native_rootfs or overlayfs_layer is provided
-            let rootfs = match (native_rootfs, overlayfs_layer.is_empty()) {
-                (Some(path), true) => Rootfs::Native(path),
-                (None, false) => Rootfs::Overlayfs(overlayfs_layer),
-                (Some(_), false) => {
-                    anyhow::bail!("Cannot specify both native_rootfs and overlayfs_rootfs")
-                }
-                (None, true) => {
-                    anyhow::bail!("Must specify either native_rootfs or overlayfs_rootfs")
+            // Determine rootfs type (only one should be provided)
+            let rootfs = match (&native_rootfs, overlayfs_layer.is_empty(), &block_rootfs, &overlaybd_rootfs) {
+                (Some(path), true, None, None) => Rootfs::Native(path.clone()),
+                (None, false, None, None) => Rootfs::Overlayfs(overlayfs_layer),
+                (None, true, Some(path), None) => Rootfs::Block(path.clone()),
+                (None, true, None, Some(path)) => Rootfs::OverlayBD(path.clone()),
+                _ => {
+                    anyhow::bail!(
+                        "Must specify exactly one of: native_rootfs, overlayfs_layer, block_rootfs, or overlaybd_rootfs"
+                    )
                 }
             };
 
@@ -213,6 +218,8 @@ async fn main() -> Result<()> {
             forward_output,
             native_rootfs,
             overlayfs_layer,
+            block_rootfs,
+            overlaybd_rootfs,
             num_vcpus,
             memory_mib,
             workdir_path,
@@ -234,15 +241,16 @@ async fn main() -> Result<()> {
             // Get supervisor PID
             let supervisor_pid = std::process::id();
 
-            // Get rootfs
-            let rootfs = match (&native_rootfs, &overlayfs_layer.is_empty()) {
-                (Some(path), true) => Rootfs::Native(path.clone()),
-                (None, false) => Rootfs::Overlayfs(overlayfs_layer.clone()),
-                (Some(_), false) => {
-                    anyhow::bail!("Cannot specify both native_rootfs and overlayfs_rootfs")
-                }
-                (None, true) => {
-                    anyhow::bail!("Must specify either native_rootfs or overlayfs_rootfs")
+            // Determine rootfs type
+            let rootfs = match (&native_rootfs, overlayfs_layer.is_empty(), &block_rootfs, &overlaybd_rootfs) {
+                (Some(path), true, None, None) => Rootfs::Native(path.clone()),
+                (None, false, None, None) => Rootfs::Overlayfs(overlayfs_layer.clone()),
+                (None, true, Some(path), None) => Rootfs::Block(path.clone()),
+                (None, true, None, Some(path)) => Rootfs::OverlayBD(path.clone()),
+                _ => {
+                    anyhow::bail!(
+                        "Must specify exactly one of: native_rootfs, overlayfs_layer, block_rootfs, or overlaybd_rootfs"
+                    )
                 }
             };
 
@@ -254,7 +262,7 @@ async fn main() -> Result<()> {
                 config_file,
                 config_last_modified,
                 log_dir.clone(),
-                rootfs.clone(),
+                rootfs,
                 forward_output,
             )
             .await?;
@@ -287,6 +295,16 @@ async fn main() -> Result<()> {
                 for path in overlayfs_layer {
                     child_args.push(format!("--overlayfs-layer={}", path.display()));
                 }
+            }
+
+            // Set block rootfs if provided
+            if let Some(block_rootfs) = block_rootfs {
+                child_args.push(format!("--block-rootfs={}", block_rootfs.display()));
+            }
+
+            // Set overlaybd rootfs if provided
+            if let Some(overlaybd_rootfs) = overlaybd_rootfs {
+                child_args.push(format!("--overlaybd-rootfs={}", overlaybd_rootfs.display()));
             }
 
             // Set env if provided

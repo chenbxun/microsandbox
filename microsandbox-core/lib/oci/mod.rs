@@ -10,6 +10,7 @@ mod image;
 mod layer;
 #[cfg(test)]
 pub(crate) mod mocks;
+pub(crate) mod overlaybd;
 mod reference;
 mod registry;
 #[cfg(test)]

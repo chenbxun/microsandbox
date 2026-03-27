@@ -21,4 +21,6 @@ Essential guides to get you started with Microsandbox.
 
 :icon-project: [Projects](projects.md) - Working with projects
 
+:icon-device-desktop: [OverlayBD](overlaybd.md) - Using OverlayBD as rootfs storage backend
+
 :icon-organization: [Architecture](architecture.md) - System architecture overview

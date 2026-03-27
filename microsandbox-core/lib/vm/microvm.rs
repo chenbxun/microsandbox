@@ -67,6 +67,7 @@ pub struct MicroVm {
 ///
 /// * `Native(PathBuf)` - A native rootfs using a single path.
 /// * `Overlayfs(Vec<PathBuf>)` - An overlayfs rootfs using a list of paths.
+/// * `Block(PathBuf)` - A block device image file exposed via virtio-blk.
 ///
 /// ## Examples
 ///
@@ -84,6 +85,12 @@ pub enum Rootfs {
 
     /// An overlayfs rootfs using a list of paths.
     Overlayfs(Vec<PathBuf>),
+
+    /// A block device image file (e.g., ext4 formatted sparse file).
+    Block(PathBuf),
+
+    /// An overlaybd image.
+    OverlayBD(PathBuf),
 }
 
 /// Configuration for a MicroVm instance.
@@ -339,6 +346,24 @@ impl MicroVm {
                     assert!(status >= 0, "failed to set rootfs: {}", status);
                 }
             }
+            Rootfs::Block(path) => {
+                tracing::debug!("setting block device rootfs: {:?}", path);
+                let c_path = CString::new(path.to_str().unwrap().as_bytes()).unwrap();
+                unsafe {
+                    let status =
+                        ffi::krun_set_root_disk(ctx_id, c_path.as_ptr());
+                    assert!(status >= 0, "failed to add block device: {}", status);
+                }
+            }
+            Rootfs::OverlayBD(path) => {
+                tracing::debug!("setting overlaybd rootfs: {:?}", path);
+                let c_path = CString::new(path.to_str().unwrap().as_bytes()).unwrap();
+                unsafe {
+                    let status =
+                        ffi::krun_set_root_disk(ctx_id, c_path.as_ptr());
+                    assert!(status >= 0, "failed to add overlaybd rootfs: {}", status);
+                }
+            }
         }
 
         tracing::debug!("applying config: {:#?}", config);
@@ -584,6 +609,24 @@ impl MicroVmConfig {
                             ),
                         ));
                     }
+                }
+            }
+            Rootfs::Block(path) => {
+                if !path.exists() {
+                    return Err(MicrosandboxError::InvalidMicroVMConfig(
+                        InvalidMicroVMConfigError::RootPathDoesNotExist(
+                            path.to_str().unwrap().into(),
+                        ),
+                    ));
+                }
+            }
+            Rootfs::OverlayBD(path) => {
+                if !path.exists() {
+                    return Err(MicrosandboxError::InvalidMicroVMConfig(
+                        InvalidMicroVMConfigError::RootPathDoesNotExist(
+                            path.to_str().unwrap().into(),
+                        ),
+                    ));
                 }
             }
         }

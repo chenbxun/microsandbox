@@ -29,6 +29,11 @@ pub const RW_SUBDIR: &str = "rw";
 /// Example: <PROJECT_ROOT>/<MICROSANDBOX_ENV_DIR>/<PATCH_SUBDIR>
 pub const PATCH_SUBDIR: &str = "patch";
 
+/// The directory where project block images are stored
+///
+/// Example: <PROJECT_ROOT>/<MICROSANDBOX_ENV_DIR>/<BLOCK_SUBDIR>
+pub const BLOCK_SUBDIR: &str = "block";
+
 /// The directory where project logs are stored
 ///
 /// Example: <PROJECT_ROOT>/<MICROSANDBOX_ENV_DIR>/<LOG_SUBDIR>
@@ -38,6 +43,26 @@ pub const LOG_SUBDIR: &str = "log";
 ///
 /// Example: <MICROSANDBOX_HOME_DIR>/<LAYERS_SUBDIR>
 pub const LAYERS_SUBDIR: &str = "layers";
+
+/// The directory where OverlayBD image configs are stored
+///
+/// Example: <MICROSANDBOX_HOME_DIR>/<OVERLAYBD_SUBDIR>
+pub const OVERLAYBD_SUBDIR: &str = "overlaybd";
+
+/// The config filename for overlaybd-tcmu backing store
+///
+/// Example: <MICROSANDBOX_HOME_DIR>/<OVERLAYBD_SUBDIR>/<IMAGE_HASH>/<OVERLAYBD_CONFIG_FILENAME>
+pub const OVERLAYBD_CONFIG_FILENAME: &str = "config.v1.json";
+
+/// The subdirectory for per-layer cache within an OverlayBD image directory
+///
+/// Example: <MICROSANDBOX_HOME_DIR>/<OVERLAYBD_SUBDIR>/<IMAGE_HASH>/<OVERLAYBD_CACHE_SUBDIR>
+pub const OVERLAYBD_CACHE_SUBDIR: &str = "cache";
+
+/// The debug result file for overlaybd-tcmu
+///
+/// Example: <MICROSANDBOX_HOME_DIR>/<OVERLAYBD_SUBDIR>/<IMAGE_HASH>/<OVERLAYBD_RESULT_FILENAME>
+pub const OVERLAYBD_RESULT_FILENAME: &str = "init-debug.log";
 
 /// The directory where installed sandboxes are stored
 ///

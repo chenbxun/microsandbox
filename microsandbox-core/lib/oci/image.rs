@@ -128,10 +128,13 @@ impl Image {
     /// * `layer_extraction_dir` - The path to store the layer files.
     ///   If None, the default layer output directory is used.
     ///
+    /// ## Returns
+    ///
+    /// Returns `true` if the image is in OverlayBD format, `false` otherwise.
     pub async fn pull(
         image: Reference,
         layer_extraction_dir: Option<PathBuf>,
-    ) -> MicrosandboxResult<()> {
+    ) -> MicrosandboxResult<bool> {
         let temp_download_dir = tempdir()?;
         let temp_download_dir = temp_download_dir.path().to_path_buf();
         tracing::info!(?temp_download_dir, "temporary download directory");

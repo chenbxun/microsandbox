@@ -11,9 +11,9 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use microsandbox_utils::{
-    DEFAULT_MSBRUN_EXE_PATH, DEFAULT_SHELL, EXTRACTED_LAYER_SUFFIX, LAYERS_SUBDIR, LOG_SUBDIR,
-    MICROSANDBOX_CONFIG_FILENAME, MICROSANDBOX_ENV_DIR, MSBRUN_EXE_ENV_VAR, OCI_DB_FILENAME,
-    PATCH_SUBDIR, RW_SUBDIR, SANDBOX_DB_FILENAME, SANDBOX_DIR, SCRIPTS_DIR, SHELL_SCRIPT_NAME, env,
+    DEFAULT_INIT_KRUN_PATH, DEFAULT_MSBRUN_EXE_PATH, DEFAULT_SHELL, EXTRACTED_LAYER_SUFFIX, LAYERS_SUBDIR, LOG_SUBDIR,
+    INIT_KRUN_FILENAME, MICROSANDBOX_CONFIG_FILENAME, MICROSANDBOX_ENV_DIR, MSBRUN_EXE_ENV_VAR, OCI_DB_FILENAME,
+    PATCH_SUBDIR, RW_SUBDIR, BLOCK_SUBDIR, SANDBOX_DB_FILENAME, SANDBOX_DIR, SCRIPTS_DIR, SHELL_SCRIPT_NAME, env,
 };
 use sqlx::{Pool, Sqlite};
 use tempfile;
@@ -26,8 +26,8 @@ use crate::{
         EnvPair, Microsandbox, PathPair, PortPair, ReferenceOrPath, START_SCRIPT_NAME, Sandbox,
     },
     management::{config, db, menv, rootfs},
-    oci::{Image, Reference},
-    vm::Rootfs,
+    oci::{Image, Reference, overlaybd},
+    vm::{BlockImage, OverlayBDImage, Rootfs, BLOCK_IMAGE_FILENAME, OVERLAYBD_CONFIG_FILENAME},
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -317,6 +317,12 @@ pub async fn prepare_run(
                 command.arg("--overlayfs-layer").arg(path);
             }
         }
+        Rootfs::Block(path) => {
+            command.arg("--block-rootfs").arg(path);
+        }
+        Rootfs::OverlayBD(path) => {
+            command.arg("--overlaybd-rootfs").arg(path);
+        }
     }
 
     // Only pass RUST_LOG if it's set in the environment
@@ -548,7 +554,13 @@ async fn setup_image_rootfs(
     use_image_defaults: bool,
 ) -> MicrosandboxResult<Rootfs> {
     tracing::info!(?image, "pulling image");
-    Image::pull(image.clone(), None).await?;
+    let is_overlaybd = Image::pull(image.clone(), None).await?;
+    if is_overlaybd && !sandbox_config.get_block_device().is_some() {
+        return Err(MicrosandboxError::ConfigValidation(format!(
+            "{} is an OverlayBD image but no block device is configured",
+            image
+        )));
+    }
 
     // Get the microsandbox home path and database path
     let microsandbox_home_path = env::get_microsandbox_home_path();
@@ -572,17 +584,19 @@ async fn setup_image_rootfs(
     // Get the extracted layer paths
     // TODO: Switch to using `LayerOps` trait
     let mut layer_paths = Vec::new();
-    for layer in &layers {
-        let layer_path = layers_dir.join(format!("{}.{}", layer.digest, EXTRACTED_LAYER_SUFFIX));
-        if !layer_path.exists() {
-            return Err(MicrosandboxError::PathNotFound(format!(
-                "extracted layer {} not found at {}",
-                layer.digest,
-                layer_path.display()
-            )));
+    if !is_overlaybd {
+        for layer in &layers {
+            let layer_path = layers_dir.join(format!("{}.{}", layer.digest, EXTRACTED_LAYER_SUFFIX));
+            if !layer_path.exists() {
+                return Err(MicrosandboxError::PathNotFound(format!(
+                    "extracted layer {} not found at {}",
+                    layer.digest,
+                    layer_path.display()
+                )));
+            }
+            tracing::info!("found extracted layer: {}", layer_path.display());
+            layer_paths.push(layer_path);
         }
-        tracing::info!("found extracted layer: {}", layer_path.display());
-        layer_paths.push(layer_path);
     }
 
     // Get sandbox scoped name (config_file/sandbox_name)
@@ -595,7 +609,7 @@ async fn setup_image_rootfs(
     tracing::info!("script_dir: {}", script_dir.display());
 
     // Create the top root path
-    let top_rw_path = menv_path.join(RW_SUBDIR).join(&scoped_name);
+    let mut top_rw_path = menv_path.join(RW_SUBDIR).join(&scoped_name);
     fs::create_dir_all(&top_rw_path).await?;
     tracing::info!("top_rw_path: {}", top_rw_path.display());
 
@@ -607,6 +621,69 @@ async fn setup_image_rootfs(
         config_last_modified,
     )
     .await?;
+
+    let mut overlaybd_image_opt: Option<OverlayBDImage> = None;
+    let mut block_image_opt: Option<BlockImage> = None;
+    let mut is_first_creation = false;
+
+    if is_overlaybd {
+        let block_device_config = sandbox_config.get_block_device().as_ref().unwrap();
+        OverlayBDImage::start_service().await?;
+        let image_dir = overlaybd::overlaybd_image_dir(&microsandbox_home_path, image);
+        let config_path = image_dir.join(microsandbox_utils::path::OVERLAYBD_CONFIG_FILENAME);
+        let device_id = format!("{}_{}", config_file, sandbox_name); // String
+
+        let is_rw_empty = fs::read_dir(&top_rw_path).await?.next_entry().await?.is_none();
+        if is_rw_empty {
+            tracing::info!("rw path is empty, creating overlaybd image");
+            let mut overlaybd_image = OverlayBDImage::new(
+                top_rw_path.clone(),
+                config_path,
+                *block_device_config.get_size(),
+                *block_device_config.get_sparse(),
+                block_device_config.get_filesystem().clone(),
+                device_id,
+            );
+            overlaybd_image.create().await?;
+            overlaybd_image.mount(&patch_dir).await?;
+            overlaybd_image_opt = Some(overlaybd_image);
+        }
+        else {
+            tracing::info!("reusing existing overlaybd image");
+            let rw_config_path = top_rw_path.join(OVERLAYBD_CONFIG_FILENAME);
+            let overlaybd_image = OverlayBDImage::from_existing(Some(rw_config_path), None, device_id).await?;
+            overlaybd_image.mount(&patch_dir).await?;
+            overlaybd_image_opt = Some(overlaybd_image);
+        }
+        top_rw_path = patch_dir.clone();
+    } else if let Some(block_device_config) = sandbox_config.get_block_device() {
+        let block_dir = menv_path.join(BLOCK_SUBDIR).join(&scoped_name);
+        fs::create_dir_all(&block_dir).await?;
+        let block_image_path = block_dir.join(BLOCK_IMAGE_FILENAME); // PathBuf
+
+        if !block_image_path.exists() {
+            tracing::info!("creating block device image: {}", block_image_path.display());
+            let mut block_image = BlockImage::new(
+                block_image_path,
+                *block_device_config.get_size(),
+                block_device_config.get_filesystem().clone(),
+            );
+            block_image.create().await?;
+            is_first_creation = true;
+            block_image_opt = Some(block_image);
+        } else if should_patch {
+            tracing::info!("reusing existing block device image but config has changed");
+            let block_image = BlockImage::from_existing(Some(block_image_path), None).await?;
+            // Mount block image to patch_dir so patch operations write directly into it
+            block_image.mount(&patch_dir).await?;
+            // Redirect rw operations to the mounted block image
+            top_rw_path = patch_dir.clone();
+            block_image_opt = Some(block_image);
+        } else {
+            tracing::info!("reusing existing block device image");
+            block_image_opt = Some(BlockImage::from_existing(Some(block_image_path), None).await?);
+        }
+    }
 
     // Only patch if sandbox doesn't exist or config has changed
     if should_patch {
@@ -647,11 +724,50 @@ async fn setup_image_rootfs(
         tracing::info!("skipping sandbox patch - config unchanged");
     }
 
+    // For block device mode, copy init.krun binary to patch_dir.
+    // In virtiofs mode, libkrun virtually injects init.krun via the filesystem driver.
+    // For block devices, we need to physically include it in the disk image.
+    if sandbox_config.get_block_device().is_some() {
+        let init_krun_dst = patch_dir.join(INIT_KRUN_FILENAME);
+        if !init_krun_dst.exists() {
+            let init_krun_src = &*DEFAULT_INIT_KRUN_PATH;
+            if !init_krun_src.exists() {
+                return Err(MicrosandboxError::PathNotFound(format!(
+                    "libkrun init binary not found at {}. Please run 'make install' to install it.",
+                    init_krun_src.display()
+                )));
+            }
+            fs::copy(init_krun_src, &init_krun_dst).await?;
+            tracing::info!("copied init.krun to {}", init_krun_dst.display());
+        }
+    }
+
     // Add the scripts and rootfs directories to the layer paths
-    layer_paths.push(patch_dir);
+    layer_paths.push(patch_dir.clone());
     layer_paths.push(top_rw_path);
 
-    Ok(Rootfs::Overlayfs(layer_paths))
+    if let Some(overlaybd_image) = overlaybd_image_opt {
+        overlaybd_image.unmount(&patch_dir).await?;
+        Ok(Rootfs::OverlayBD(overlaybd_image
+                .loop_device_path()
+                .expect("loop device should be attached")
+                .to_path_buf()
+            ))
+    } else if let Some(block_image) = block_image_opt {
+        if is_first_creation {
+            // First creation: populate image with all layers from scratch
+            block_image.populate_from_layers(&layer_paths).await?;
+        } else if should_patch {
+            block_image.unmount(&patch_dir).await?;
+        }
+        Ok(Rootfs::Block(block_image
+                .loop_device_path()
+                .expect("loop device should be attached")
+                .to_path_buf()
+            ))
+    } else {
+        Ok(Rootfs::Overlayfs(layer_paths))
+    }
 }
 
 async fn setup_native_rootfs(
@@ -773,13 +889,13 @@ pub fn determine_exec_path_and_args(
                     ));
                 }
 
-                let script_path = format!("{}/{}/{}", SANDBOX_DIR, SCRIPTS_DIR, script_name);
+                let script_path = format!("/{}/{}/{}", SANDBOX_DIR, SCRIPTS_DIR, script_name);
                 Ok((script_path, Vec::new()))
             }
             None => match sandbox_config.get_scripts().get(START_SCRIPT_NAME) {
                 Some(_) => {
                     let script_path =
-                        format!("{}/{}/{}", SANDBOX_DIR, SCRIPTS_DIR, START_SCRIPT_NAME);
+                        format!("/{}/{}/{}", SANDBOX_DIR, SCRIPTS_DIR, START_SCRIPT_NAME);
                     Ok((script_path, Vec::new()))
                 }
                 None => {
