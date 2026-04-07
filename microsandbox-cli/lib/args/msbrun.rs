@@ -35,6 +35,10 @@ pub enum McrunSubcommand {
         #[arg(long)]
         overlayfs_layer: Vec<PathBuf>,
 
+        /// Block device root filesystem image path
+        #[arg(long)]
+        block_rootfs: Option<PathBuf>,
+
         /// Number of virtual CPUs
         #[arg(long)]
         num_vcpus: Option<u8>,
@@ -118,6 +122,10 @@ pub enum McrunSubcommand {
         /// Overlayfs root filesystem layers
         #[arg(long)]
         overlayfs_layer: Vec<PathBuf>,
+
+        /// Block device root filesystem image path
+        #[arg(long)]
+        block_rootfs: Option<PathBuf>,
 
         /// Number of virtual CPUs
         #[arg(long)]

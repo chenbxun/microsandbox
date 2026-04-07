@@ -11,9 +11,9 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use microsandbox_utils::{
-    DEFAULT_MSBRUN_EXE_PATH, DEFAULT_SHELL, EXTRACTED_LAYER_SUFFIX, LAYERS_SUBDIR, LOG_SUBDIR,
-    MICROSANDBOX_CONFIG_FILENAME, MICROSANDBOX_ENV_DIR, MSBRUN_EXE_ENV_VAR, OCI_DB_FILENAME,
-    PATCH_SUBDIR, RW_SUBDIR, SANDBOX_DB_FILENAME, SANDBOX_DIR, SCRIPTS_DIR, SHELL_SCRIPT_NAME, env,
+    DEFAULT_INIT_KRUN_PATH, DEFAULT_MSBRUN_EXE_PATH, DEFAULT_SHELL, EXTRACTED_LAYER_SUFFIX, LAYERS_SUBDIR, LOG_SUBDIR,
+    INIT_KRUN_FILENAME, MICROSANDBOX_CONFIG_FILENAME, MICROSANDBOX_ENV_DIR, MSBRUN_EXE_ENV_VAR, OCI_DB_FILENAME,
+    PATCH_SUBDIR, RW_SUBDIR, BLOCK_SUBDIR, SANDBOX_DB_FILENAME, SANDBOX_DIR, SCRIPTS_DIR, SHELL_SCRIPT_NAME, env,
 };
 use sqlx::{Pool, Sqlite};
 use tempfile;
@@ -27,7 +27,7 @@ use crate::{
     },
     management::{config, db, menv, rootfs},
     oci::{Image, Reference},
-    vm::Rootfs,
+    vm::{BlockImage, Rootfs},
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -316,6 +316,9 @@ pub async fn prepare_run(
             for path in paths {
                 command.arg("--overlayfs-layer").arg(path);
             }
+        }
+        Rootfs::Block(path) => {
+            command.arg("--block-rootfs").arg(path);
         }
     }
 
@@ -647,11 +650,60 @@ async fn setup_image_rootfs(
         tracing::info!("skipping sandbox patch - config unchanged");
     }
 
+    // For block device mode, copy init.krun binary to patch_dir.
+    // In virtiofs mode, libkrun virtually injects init.krun via the filesystem driver.
+    // For block devices, we need to physically include it in the disk image.
+    if sandbox_config.get_block_device().is_some() {
+        let init_krun_dst = patch_dir.join(INIT_KRUN_FILENAME);
+        if !init_krun_dst.exists() {
+            let init_krun_src = &*DEFAULT_INIT_KRUN_PATH;
+            if !init_krun_src.exists() {
+                return Err(MicrosandboxError::PathNotFound(format!(
+                    "libkrun init binary not found at {}. Please run 'make install' to install it.",
+                    init_krun_src.display()
+                )));
+            }
+            fs::copy(init_krun_src, &init_krun_dst).await?;
+            tracing::info!("copied init.krun to {}", init_krun_dst.display());
+        }
+    }
+
     // Add the scripts and rootfs directories to the layer paths
     layer_paths.push(patch_dir);
     layer_paths.push(top_rw_path);
 
-    Ok(Rootfs::Overlayfs(layer_paths))
+    // Return based on rootfs type
+    if let Some(block_device_config) = sandbox_config.get_block_device() {
+        // Create block device image
+        let block_dir = menv_path.join(BLOCK_SUBDIR).join(&scoped_name);
+        fs::create_dir_all(&block_dir).await?;
+        let block_image_path = block_dir.join("rootfs.img"); // PathBuf
+
+        // Only recreate if config changed or image doesn't exist
+        if should_patch || !block_image_path.exists() {
+            tracing::info!("creating block device image: {}", block_image_path.display());
+
+            let mut block_image = BlockImage::builder()
+                .path(block_image_path.clone())
+                .size_gib(*block_device_config.get_size())
+                .filesystem(block_device_config.get_filesystem().clone())
+                .build()?;
+
+            // Create and format
+            block_image.create().await?;
+
+            // Populate with layer contents
+            block_image.populate_from_layers(&layer_paths).await?;
+
+            Ok(Rootfs::Block(block_image.loop_device_path().expect("loop device should be attached").to_path_buf()))
+        } else {
+            tracing::info!("reusing existing block device image");
+            let block_image = BlockImage::from_existing(block_image_path).await?;
+            Ok(Rootfs::Block(block_image.loop_device_path().expect("loop device should be attached").to_path_buf()))
+        }
+    } else {
+        Ok(Rootfs::Overlayfs(layer_paths))
+    }
 }
 
 async fn setup_native_rootfs(

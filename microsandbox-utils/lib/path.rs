@@ -29,6 +29,11 @@ pub const RW_SUBDIR: &str = "rw";
 /// Example: <PROJECT_ROOT>/<MICROSANDBOX_ENV_DIR>/<PATCH_SUBDIR>
 pub const PATCH_SUBDIR: &str = "patch";
 
+/// The directory where project block images are stored
+///
+/// Example: <PROJECT_ROOT>/<MICROSANDBOX_ENV_DIR>/<BLOCK_SUBDIR>
+pub const BLOCK_SUBDIR: &str = "block";
+
 /// The directory where project logs are stored
 ///
 /// Example: <PROJECT_ROOT>/<MICROSANDBOX_ENV_DIR>/<LOG_SUBDIR>

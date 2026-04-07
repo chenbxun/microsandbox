@@ -449,10 +449,10 @@ build_libkrun() {
 
     case "$OS_TYPE" in
         Darwin)
-            sudo make LIBRARY_PATH="$LIBRARY_PATH" PATH="$PATH"
+            sudo make BLK=1 LIBRARY_PATH="$LIBRARY_PATH" PATH="$PATH"
             ;;
         *)
-            make LIBRARY_PATH="$LIBRARY_PATH" PATH="$PATH"
+            make BLK=1 LIBRARY_PATH="$LIBRARY_PATH" PATH="$PATH"
             ;;
     esac
     check_success "Failed to build libkrun"

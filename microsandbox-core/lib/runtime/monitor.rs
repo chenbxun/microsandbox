@@ -147,6 +147,7 @@ impl ProcessMonitor for MicroVmMonitor {
                     .collect::<Vec<String>>()
                     .join(":")
             ),
+            Rootfs::Block(path) => format!("block:{}", path.to_string_lossy().into_owned()),
         };
 
         // Insert sandbox entry into database
@@ -317,6 +318,36 @@ impl ProcessMonitor for MicroVmMonitor {
     async fn stop(&mut self) -> MicrosandboxUtilsResult<()> {
         // Restore terminal settings if they were modified
         self.restore_terminal_settings();
+
+        // Detach loop device if block rootfs was used
+        if let Rootfs::Block(ref loop_device_path) = self.rootfs {
+            let output = tokio::process::Command::new("losetup")
+                .arg("-d")
+                .arg(loop_device_path)
+                .output()
+                .await;
+
+            match output {
+                Ok(o) if o.status.success() => {
+                    tracing::info!(device = %loop_device_path.display(), "loop device detached on VM exit");
+                }
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    tracing::warn!(
+                        device = %loop_device_path.display(),
+                        error = %stderr.trim(),
+                        "failed to detach loop device on VM exit"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        device = %loop_device_path.display(),
+                        error = %e,
+                        "failed to execute losetup -d on VM exit"
+                    );
+                }
+            }
+        }
 
         // Update sandbox status to stopped
         db::update_sandbox_status(

@@ -294,6 +294,10 @@ pub enum MicrosandboxError {
     /// An error that occurred when failed to parse OCI reference
     #[error("failed to parse OCI reference: {0}")]
     ParseError(#[from] oci_client::ParseError),
+
+    /// An error that occurred during block image operations.
+    #[error("block image error: {0}")]
+    BlockImageError(String),
 }
 
 /// An error that occurred when an invalid MicroVm configuration was used.

@@ -9,7 +9,7 @@ use crate::{
     config::{EnvPair, PathPair, PortPair, ReferenceOrPath},
 };
 
-use super::{Build, Meta, Microsandbox, Module, NetworkScope, Sandbox};
+use super::{BlockDeviceConfig, Build, Meta, Microsandbox, Module, NetworkScope, Sandbox};
 
 //--------------------------------------------------------------------------------------------------
 // Types
@@ -71,6 +71,7 @@ pub struct SandboxBuilder<I> {
     imports: HashMap<String, Utf8UnixPathBuf>,
     exports: HashMap<String, Utf8UnixPathBuf>,
     scope: NetworkScope,
+    block_device: Option<BlockDeviceConfig>,
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -153,6 +154,7 @@ impl<I> SandboxBuilder<I> {
             imports: self.imports,
             exports: self.exports,
             scope: self.scope,
+            block_device: self.block_device,
         }
     }
 
@@ -248,6 +250,12 @@ impl<I> SandboxBuilder<I> {
         self.scope = scope;
         self
     }
+
+    /// Sets the block device configuration for the sandbox
+    pub fn block_device(mut self, block_device: BlockDeviceConfig) -> SandboxBuilder<I> {
+        self.block_device = Some(block_device);
+        self
+    }
 }
 
 impl SandboxBuilder<ReferenceOrPath> {
@@ -270,6 +278,7 @@ impl SandboxBuilder<ReferenceOrPath> {
             imports: self.imports,
             exports: self.exports,
             scope: self.scope,
+            block_device: self.block_device,
         }
     }
 }
@@ -298,6 +307,7 @@ impl Default for SandboxBuilder<()> {
             imports: HashMap::new(),
             exports: HashMap::new(),
             scope: NetworkScope::default(),
+            block_device: None,
         }
     }
 }

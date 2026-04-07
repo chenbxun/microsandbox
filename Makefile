@@ -135,6 +135,11 @@ install: build
 	else \
 		echo "Warning: libkrun library not found in build directory"; \
 	fi
+	@if [ -f "$(BUILD_DIR)/libkrun/init/init" ]; then \
+		install -m 755 $(BUILD_DIR)/libkrun/init/init $(HOME_LIB)/init.krun; \
+	else \
+		echo "Warning: libkrun init binary not found in build directory"; \
+	fi
 	@echo "Installation of $(if $(filter 1,$(DEBUG)),debug,release) build complete."
 
 # -----------------------------------------------------------------------------
