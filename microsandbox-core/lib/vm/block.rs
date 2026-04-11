@@ -415,7 +415,7 @@ impl BlockImage {
     }
 
     /// Mount the block image to target path.
-    async fn mount(&self, target: &Path) -> MicrosandboxResult<()> {
+    pub async fn mount(&self, target: &Path) -> MicrosandboxResult<()> {
         let loop_device = self.loop_device.as_ref().ok_or_else(|| {
             MicrosandboxError::BlockImageError("loop device not attached".to_string())
         })?;
@@ -442,7 +442,7 @@ impl BlockImage {
     }
 
     /// Unmount the block image from target path.
-    async fn unmount(&self, target: &Path) -> MicrosandboxResult<()> {
+    pub async fn unmount(&self, target: &Path) -> MicrosandboxResult<()> {
         let output = Command::new("umount")
             .arg(target)
             .output()

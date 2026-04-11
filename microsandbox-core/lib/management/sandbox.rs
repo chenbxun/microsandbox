@@ -598,7 +598,7 @@ async fn setup_image_rootfs(
     tracing::info!("script_dir: {}", script_dir.display());
 
     // Create the top root path
-    let top_rw_path = menv_path.join(RW_SUBDIR).join(&scoped_name);
+    let mut top_rw_path = menv_path.join(RW_SUBDIR).join(&scoped_name);
     fs::create_dir_all(&top_rw_path).await?;
     tracing::info!("top_rw_path: {}", top_rw_path.display());
 
@@ -610,6 +610,38 @@ async fn setup_image_rootfs(
         config_last_modified,
     )
     .await?;
+
+    let mut block_image_opt: Option<BlockImage> = None;
+    let mut is_first_creation = false;
+
+    if let Some(block_device_config) = sandbox_config.get_block_device() {
+        let block_dir = menv_path.join(BLOCK_SUBDIR).join(&scoped_name);
+        fs::create_dir_all(&block_dir).await?;
+        let block_image_path = block_dir.join("rootfs.img"); // PathBuf
+
+        if !block_image_path.exists() {
+            tracing::info!("creating block device image: {}", block_image_path.display());
+            let mut block_image = BlockImage::builder()
+                .path(block_image_path)
+                .size_gib(*block_device_config.get_size())
+                .filesystem(block_device_config.get_filesystem().clone())
+                .build()?;
+            block_image.create().await?;
+            is_first_creation = true;
+            block_image_opt = Some(block_image);
+        } else if should_patch {
+            tracing::info!("reusing existing block device image but config has changed");
+            let block_image = BlockImage::from_existing(block_image_path).await?;
+            // Mount block image to patch_dir so patch operations write directly into it
+            block_image.mount(&patch_dir).await?;
+            // Redirect rw operations to the mounted block image
+            top_rw_path = patch_dir.clone();
+            block_image_opt = Some(block_image);
+        } else {
+            tracing::info!("reusing existing block device image");
+            block_image_opt = Some(BlockImage::from_existing(block_image_path).await?);
+        }
+    }
 
     // Only patch if sandbox doesn't exist or config has changed
     if should_patch {
@@ -669,38 +701,22 @@ async fn setup_image_rootfs(
     }
 
     // Add the scripts and rootfs directories to the layer paths
-    layer_paths.push(patch_dir);
+    layer_paths.push(patch_dir.clone());
     layer_paths.push(top_rw_path);
 
-    // Return based on rootfs type
-    if let Some(block_device_config) = sandbox_config.get_block_device() {
-        // Create block device image
-        let block_dir = menv_path.join(BLOCK_SUBDIR).join(&scoped_name);
-        fs::create_dir_all(&block_dir).await?;
-        let block_image_path = block_dir.join("rootfs.img"); // PathBuf
-
-        // Only recreate if config changed or image doesn't exist
-        if should_patch || !block_image_path.exists() {
-            tracing::info!("creating block device image: {}", block_image_path.display());
-
-            let mut block_image = BlockImage::builder()
-                .path(block_image_path.clone())
-                .size_gib(*block_device_config.get_size())
-                .filesystem(block_device_config.get_filesystem().clone())
-                .build()?;
-
-            // Create and format
-            block_image.create().await?;
-
-            // Populate with layer contents
+    if let Some(mut block_image) = block_image_opt {
+        if is_first_creation {
+            // First creation: populate image with all layers from scratch
             block_image.populate_from_layers(&layer_paths).await?;
-
-            Ok(Rootfs::Block(block_image.loop_device_path().expect("loop device should be attached").to_path_buf()))
-        } else {
-            tracing::info!("reusing existing block device image");
-            let block_image = BlockImage::from_existing(block_image_path).await?;
-            Ok(Rootfs::Block(block_image.loop_device_path().expect("loop device should be attached").to_path_buf()))
+        } else if should_patch {
+            block_image.unmount(&patch_dir).await?;
         }
+        Ok(Rootfs::Block(
+            block_image
+                .loop_device_path()
+                .expect("loop device should be attached")
+                .to_path_buf(),
+        ))
     } else {
         Ok(Rootfs::Overlayfs(layer_paths))
     }
